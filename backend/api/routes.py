@@ -6,6 +6,7 @@ from backend.core.data_feeds import data_feed_manager
 from backend.core.market_manager import market_manager
 from backend.core.money_manager import money_manager
 from backend.core.redis_manager import redis_manager
+from backend.core.server_time import server_time_syncer
 from backend.core.signal_engine import signal_engine
 
 router = APIRouter(prefix="/api", tags=["bot"])
@@ -22,6 +23,7 @@ async def get_status():
             "redis": redis_manager._redis is not None,
         },
         "tracked_markets": len(market_manager.tracked_markets),
+        "server_time_offset_ms": round(server_time_syncer.offset_ms, 1),
     }
 
 

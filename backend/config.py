@@ -46,8 +46,8 @@ POLYMARKET_GAMMA_API: str = _env(
 POLYMARKET_WS_URL: str = _env(
     "POLYMARKET_WS_URL", "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 )
-POLYMARKET_STRAPI_API: str = _env(
-    "POLYMARKET_STRAPI_API", "https://strapi-matic.polymarket.com"
+POLYMARKET_RTDS_URL: str = _env(
+    "POLYMARKET_RTDS_URL", "wss://ws-live-data.polymarket.com"
 )
 
 # ── Binance URLs ─────────────────────────────────────────────────────────────

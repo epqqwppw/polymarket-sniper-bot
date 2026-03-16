@@ -14,6 +14,7 @@ from backend.config import (
     BINANCE_FUTURES_API,
     BINANCE_WS_URL,
     COINGECKO_API,
+    POLYMARKET_RTDS_URL,
     POLYMARKET_WS_URL,
 )
 from backend.core.redis_manager import redis_manager
@@ -167,12 +168,13 @@ class DataFeedManager:
                     backoff = 1
                     logger.info("Polymarket CLOB WS connected")
 
-                    # Subscribe to known tokens
+                    # Subscribe to known tokens — official format per
+                    # docs.polymarket.com/market-data/websocket/market-channel
                     if self._subscribed_tokens:
                         sub_msg = {
-                            "type": "subscribe",
-                            "channel": "market",
                             "assets_ids": list(self._subscribed_tokens),
+                            "type": "market",
+                            "custom_feature_enabled": True,
                         }
                         await ws.send(json.dumps(sub_msg))
 
@@ -194,26 +196,29 @@ class DataFeedManager:
             msg = json.loads(raw)
             event_type = msg.get("event_type", msg.get("type", ""))
 
-            if event_type in ("price_change", "last_trade_price"):
+            if event_type in ("price_change", "best_bid_ask"):
                 asset_id = msg.get("asset_id", "")
-                price = safe_float(msg.get("price", msg.get("last_trade_price")))
+                price = safe_float(msg.get("price"))
                 if asset_id and price:
-                    # We store both YES and NO prices keyed by token ID
                     self.yes_prices[asset_id] = price
                     await redis_manager.publish(
                         f"orderflow:{asset_id}",
                         {"type": "price", "asset_id": asset_id, "price": price, "ts": timestamp_ms()},
                     )
 
-            elif event_type == "trade":
+            elif event_type == "last_trade_price":
+                # Per official docs this is the trade execution event
                 asset_id = msg.get("asset_id", "")
+                price = safe_float(msg.get("price", msg.get("last_trade_price")))
                 side = msg.get("side", "")
                 size = safe_float(msg.get("size"))
-                price = safe_float(msg.get("price"))
                 ts = timestamp_ms()
-                trade = {"side": side, "size": size, "price": price, "ts": ts, "asset_id": asset_id}
-                self.order_flow[asset_id].append(trade)
-                await redis_manager.publish(f"orderflow:{asset_id}", trade)
+                if asset_id and price:
+                    self.yes_prices[asset_id] = price
+                if asset_id:
+                    trade = {"side": side, "size": size, "price": price, "ts": ts, "asset_id": asset_id}
+                    self.order_flow[asset_id].append(trade)
+                    await redis_manager.publish(f"orderflow:{asset_id}", trade)
 
         except Exception:
             logger.exception("Error handling CLOB message")
@@ -223,24 +228,28 @@ class DataFeedManager:
     async def _polymarket_rtds_loop(self) -> None:
         """Connect to RTDS for Chainlink resolution prices.
 
-        The RTDS WebSocket provides the exact price Polymarket uses to
-        resolve markets, making it the most critical data feed.
+        The RTDS (Real-Time Data Socket) at wss://ws-live-data.polymarket.com
+        provides the exact Chainlink price Polymarket uses to resolve markets.
+        Subscription format per docs.polymarket.com/market-data/websocket/rtds
         """
         backoff = 1
-        rtds_url = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
         while self._running:
             try:
                 logger.info("Connecting to Polymarket RTDS …")
-                async with websockets.connect(rtds_url, ping_interval=25) as ws:
+                async with websockets.connect(POLYMARKET_RTDS_URL, ping_interval=5) as ws:
                     self.rtds_healthy = True
                     backoff = 1
-                    logger.info("RTDS connected")
+                    logger.info("RTDS connected to %s", POLYMARKET_RTDS_URL)
 
-                    # Subscribe to Chainlink crypto prices
+                    # Subscribe to Chainlink crypto prices — official RTDS format
                     sub = {
-                        "type": "subscribe",
-                        "channel": "crypto_prices_chainlink",
-                        "symbols": ["btc/usd", "eth/usd", "sol/usd"],
+                        "action": "subscribe",
+                        "subscriptions": [
+                            {
+                                "topic": "crypto_prices_chainlink",
+                                "type": "*",
+                            }
+                        ],
                     }
                     await ws.send(json.dumps(sub))
 
@@ -260,50 +269,64 @@ class DataFeedManager:
             backoff = min(backoff * 2, 30)
 
     async def _handle_rtds_msg(self, raw: str) -> None:
+        """Handle RTDS messages.
+
+        Official payload structure (docs.polymarket.com/market-data/websocket/rtds):
+        {
+            "topic": "crypto_prices_chainlink",
+            "type": "update",
+            "timestamp": 1753314064237,
+            "payload": {
+                "symbol": "btcusd",
+                "timestamp": 1753314064213,
+                "value": 84250.55
+            }
+        }
+        """
         try:
             msg = json.loads(raw)
-            prices = msg.get("prices", msg.get("data", {}))
-            if isinstance(prices, dict):
-                for sym, val in prices.items():
-                    asset = sym.split("/")[0].upper()
-                    if asset in ("BTC", "ETH", "SOL"):
-                        price = safe_float(val)
-                        ts = timestamp_ms()
-                        self.chainlink_prices[asset] = price
-                        self.chainlink_ts[asset] = ts
-                        await redis_manager.publish(
-                            f"price:chainlink:{asset}",
-                            {"price": price, "ts": ts},
-                        )
-            # Handle array-style responses too
-            elif isinstance(prices, list):
-                for item in prices:
-                    sym = item.get("symbol", "")
-                    asset = sym.split("/")[0].upper()
-                    if asset in ("BTC", "ETH", "SOL"):
-                        price = safe_float(item.get("price"))
-                        ts = timestamp_ms()
-                        self.chainlink_prices[asset] = price
-                        self.chainlink_ts[asset] = ts
-                        await redis_manager.publish(
-                            f"price:chainlink:{asset}",
-                            {"price": price, "ts": ts},
-                        )
-            # If top-level has price field
-            elif "price" in msg:
-                sym = msg.get("symbol", "")
-                asset = sym.split("/")[0].upper()
-                if asset in ("BTC", "ETH", "SOL"):
-                    price = safe_float(msg["price"])
-                    ts = timestamp_ms()
-                    self.chainlink_prices[asset] = price
-                    self.chainlink_ts[asset] = ts
-                    await redis_manager.publish(
-                        f"price:chainlink:{asset}",
-                        {"price": price, "ts": ts},
-                    )
+            topic = msg.get("topic", "")
+
+            if topic == "crypto_prices_chainlink":
+                payload = msg.get("payload", {})
+                if isinstance(payload, dict) and "symbol" in payload:
+                    # Single-symbol update
+                    await self._process_rtds_price(payload)
+                elif isinstance(payload, list):
+                    # Batch update
+                    for item in payload:
+                        await self._process_rtds_price(item)
+            elif topic == "crypto_prices":
+                # Binance-sourced prices also available via RTDS
+                payload = msg.get("payload", {})
+                if isinstance(payload, dict) and "symbol" in payload:
+                    await self._process_rtds_price(payload)
         except Exception:
             logger.exception("Error handling RTDS message")
+
+    async def _process_rtds_price(self, payload: dict) -> None:
+        """Extract asset and price from a single RTDS price payload."""
+        symbol = payload.get("symbol", "").upper().replace("/", "")
+        # Normalize symbols: "BTCUSD" → "BTC", "ETHUSD" → "ETH", etc.
+        asset = None
+        for prefix in ("BTC", "ETH", "SOL"):
+            if symbol.startswith(prefix):
+                asset = prefix
+                break
+        if not asset:
+            return
+
+        price = safe_float(payload.get("value", payload.get("price")))
+        if not price:
+            return
+
+        ts = int(payload.get("timestamp", timestamp_ms()))
+        self.chainlink_prices[asset] = price
+        self.chainlink_ts[asset] = ts
+        await redis_manager.publish(
+            f"price:chainlink:{asset}",
+            {"price": price, "ts": ts},
+        )
 
     # ── Feed 4: Binance Futures REST Polling ─────────────────────────────
 
@@ -324,18 +347,24 @@ class DataFeedManager:
             await asyncio.sleep(5)
 
     async def _fetch_funding_rate(self, symbol: str, asset: str) -> None:
+        """Fetch current funding rate from Binance premiumIndex endpoint.
+
+        /fapi/v1/premiumIndex returns real-time data including lastFundingRate.
+        /fapi/v1/fundingRate only returns historical rates — not suitable for
+        live trading decisions.
+        """
         if not self._http:
             return
-        url = f"{BINANCE_FUTURES_API}/fapi/v1/fundingRate"
+        url = f"{BINANCE_FUTURES_API}/fapi/v1/premiumIndex"
         try:
             async with self._http.get(
-                url, params={"symbol": symbol, "limit": "1"},
+                url, params={"symbol": symbol},
                 timeout=aiohttp.ClientTimeout(total=5),
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    if data and isinstance(data, list):
-                        self.funding_rates[asset] = safe_float(data[0].get("fundingRate"))
+                    if data and isinstance(data, dict):
+                        self.funding_rates[asset] = safe_float(data.get("lastFundingRate"))
         except Exception:
             logger.debug("Failed to fetch funding rate for %s", symbol)
 
