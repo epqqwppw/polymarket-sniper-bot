@@ -165,6 +165,7 @@ class MarketDiscovery:
     def __init__(self) -> None:
         self._session: Optional[aiohttp.ClientSession] = None
         self._discovered: Dict[str, MarketInfo] = {}
+        self._fallback_markets: Optional[List[Dict]] = None
 
     async def start(self) -> None:
         """Initialize the HTTP session."""
