@@ -11,11 +11,17 @@ def _env(key: str, default: str = "") -> str:
 
 
 def _env_float(key: str, default: float = 0.0) -> float:
-    return float(os.getenv(key, str(default)))
+    try:
+        return float(os.getenv(key, str(default)))
+    except (TypeError, ValueError):
+        return default
 
 
 def _env_int(key: str, default: int = 0) -> int:
-    return int(os.getenv(key, str(default)))
+    try:
+        return int(os.getenv(key, str(default)))
+    except (TypeError, ValueError):
+        return default
 
 
 def _env_bool(key: str, default: bool = False) -> bool:

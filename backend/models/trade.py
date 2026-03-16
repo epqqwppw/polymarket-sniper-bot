@@ -35,7 +35,7 @@ class SimulatedTrade(BaseModel):
     duration: int
     action: TradeAction
     side: str
-    size: float = Field(ge=0.0)
+    size: float = Field(gt=0.0)
     price: float = Field(ge=0.0, le=1.0)
     revenue: float = 0.0
     pnl: float = 0.0
