@@ -14,6 +14,7 @@ from backend.core.data_feeds import data_feed_manager
 from backend.core.market_discovery import market_discovery
 from backend.core.market_manager import market_manager
 from backend.core.redis_manager import redis_manager
+from backend.core.server_time import server_time_syncer
 from backend.core.signal_engine import signal_engine
 from backend.utils.logger import get_logger
 
@@ -28,19 +29,22 @@ async def lifespan(app: FastAPI):
         # 1. Connect Redis
         await redis_manager.connect()
 
-        # 2. Start data feeds (Binance WS, Polymarket CLOB/RTDS, etc.)
+        # 2. Sync with Polymarket server clock (GET /time)
+        await server_time_syncer.start()
+
+        # 3. Start data feeds (Binance WS, Polymarket CLOB/RTDS, etc.)
         await data_feed_manager.start()
 
-        # 3. Start market discovery
+        # 4. Start market discovery
         await market_discovery.start()
 
-        # 4. Start signal engine
+        # 5. Start signal engine
         await signal_engine.start()
 
-        # 5. Start market manager (orchestrator)
+        # 6. Start market manager (orchestrator)
         await market_manager.start()
 
-        # 6. Start WebSocket broadcaster
+        # 7. Start WebSocket broadcaster
         await broadcaster.start()
 
         logger.info("All services started successfully ✅")
@@ -57,6 +61,7 @@ async def lifespan(app: FastAPI):
     await signal_engine.stop()
     await data_feed_manager.stop()
     await market_discovery.stop()
+    await server_time_syncer.stop()
     await redis_manager.disconnect()
     logger.info("Shutdown complete 🛑")
 

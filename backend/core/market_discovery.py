@@ -8,6 +8,7 @@ import aiohttp
 
 from backend.config import POLYMARKET_GAMMA_API
 from backend.core.redis_manager import redis_manager
+from backend.core.server_time import server_time_syncer
 from backend.models.market import (
     Asset,
     ClobTokenIds,
@@ -33,8 +34,11 @@ _KEYWORDS_DIR = {"above", "below", "up", "down"}
 
 
 def compute_current_slugs(now: Optional[int] = None) -> List[Dict]:
-    """Compute market slugs for the current interval of each asset+duration."""
-    now = now or int(time.time())
+    """Compute market slugs for the current interval of each asset+duration.
+
+    Uses Polymarket server-synced time for accurate slug generation.
+    """
+    now = now or int(server_time_syncer.server_now())
     slugs = []
     for asset in ASSETS:
         for dur in DURATIONS:
@@ -54,8 +58,11 @@ def compute_current_slugs(now: Optional[int] = None) -> List[Dict]:
 
 
 def compute_next_slugs(now: Optional[int] = None) -> List[Dict]:
-    """Compute market slugs for the NEXT interval (pre-fetching)."""
-    now = now or int(time.time())
+    """Compute market slugs for the NEXT interval (pre-fetching).
+
+    Uses Polymarket server-synced time for accurate slug generation.
+    """
+    now = now or int(server_time_syncer.server_now())
     slugs = []
     for asset in ASSETS:
         for dur in DURATIONS:
@@ -186,7 +193,6 @@ class MarketDiscovery:
         next_slugs = compute_next_slugs()
         all_slugs = current + next_slugs
 
-        markets_raw = await self._fetch_active_markets()
         found: List[MarketInfo] = []
 
         for slug_info in all_slugs:
@@ -201,18 +207,29 @@ class MarketDiscovery:
                 except Exception:
                     pass
 
-            # Try slug match
+            # Primary: slug-based event lookup via /events?slug=
+            matched = await self._fetch_event_by_slug(slug_info["slug"])
+            if matched:
+                mi = _parse_market(matched, slug_info)
+                if mi:
+                    found.append(mi)
+                    self._discovered[mi.slug] = mi
+                    await redis_manager.cache_market(mi.slug, mi.model_dump())
+                    logger.info("Discovered market: %s (strike=%.2f)", mi.slug, mi.price_to_beat)
+                    continue
+
+            # Fallback: fetch all active markets and match by slug/keywords
+            if not getattr(self, "_fallback_markets", None):
+                self._fallback_markets = await self._fetch_active_markets()
+
             matched = None
-            for m in markets_raw:
+            for m in self._fallback_markets:
                 if _market_matches_slug(m, slug_info):
                     matched = m
                     break
-
-            # Fallback: keyword match
             if matched is None:
-                for m in markets_raw:
+                for m in self._fallback_markets:
                     if _market_matches_keywords(m):
-                        # Additional check: does the timing make sense?
                         matched = m
                         break
 
@@ -224,7 +241,41 @@ class MarketDiscovery:
                     await redis_manager.cache_market(mi.slug, mi.model_dump())
                     logger.info("Discovered market: %s (strike=%.2f)", mi.slug, mi.price_to_beat)
 
+        # Clear fallback cache for next cycle
+        self._fallback_markets = None
+
         return found
+
+    async def _fetch_event_by_slug(self, slug: str) -> Optional[Dict]:
+        """Fetch a specific event by slug via the Gamma API.
+
+        Uses GET /events?slug={slug} for precise lookup instead of
+        fetching all markets.
+        """
+        if not self._session:
+            return None
+        url = f"{POLYMARKET_GAMMA_API}/events"
+        params = {"slug": slug}
+        try:
+            async with self._session.get(
+                url, params=params, timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    # Response may be a list of events or a single event
+                    events = data if isinstance(data, list) else [data]
+                    for event in events:
+                        # An event contains nested markets
+                        markets = event.get("markets", [])
+                        if markets:
+                            return markets[0]
+                        # If the event itself has market fields, return it
+                        if event.get("clobTokenIds") or event.get("conditionId"):
+                            return event
+                return None
+        except Exception:
+            logger.debug("Failed to fetch event by slug: %s", slug)
+            return None
 
     async def _fetch_active_markets(self) -> List[Dict]:
         """Fetch active markets from the Gamma API."""
