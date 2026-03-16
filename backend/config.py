@@ -31,7 +31,7 @@ def _env_bool(key: str, default: bool = False) -> bool:
 # ── General ──────────────────────────────────────────────────────────────────
 DRY_RUN: bool = _env_bool("DRY_RUN", True)
 LOG_LEVEL: str = _env("LOG_LEVEL", "INFO")
-INITIAL_BANKROLL: float = _env_float("INITIAL_BANKROLL", 500.0)
+INITIAL_BANKROLL: float = _env_float("INITIAL_BANKROLL", 100.0)
 
 # ── Redis ────────────────────────────────────────────────────────────────────
 REDIS_URL: str = _env("REDIS_URL", "redis://localhost:6379/0")
@@ -55,7 +55,17 @@ BINANCE_REST_URL: str = _env(
     "BINANCE_REST_URL", "https://api.binance.com/api/v3"
 )
 BINANCE_WS_URL: str = _env(
-    "BINANCE_WS_URL", "wss://stream.binance.com:9443/ws"
+    "BINANCE_WS_URL",
+    "wss://stream.binance.com:9443/stream?streams="
+    "btcusdt@aggTrade/ethusdt@aggTrade/solusdt@aggTrade",
+)
+BINANCE_FUTURES_API: str = _env(
+    "BINANCE_FUTURES_API", "https://fapi.binance.com"
+)
+
+# ── CoinGecko (fallback) ────────────────────────────────────────────────────
+COINGECKO_API: str = _env(
+    "COINGECKO_API", "https://api.coingecko.com/api/v3"
 )
 
 # ── Trading Parameters ───────────────────────────────────────────────────────
