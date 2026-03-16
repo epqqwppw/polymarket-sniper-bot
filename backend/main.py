@@ -82,7 +82,7 @@ app.add_middleware(
 app.include_router(api_router)
 
 # Wrap FastAPI with Socket.IO ASGI app
-socket_app = socketio.ASGIApp(sio, other_app=app)
+socket_app = socketio.ASGIApp(sio, other_asgi_app=app)
 
 
 if __name__ == "__main__":
