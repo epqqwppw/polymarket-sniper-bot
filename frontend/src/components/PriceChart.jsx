@@ -5,6 +5,7 @@ import {
   XAxis,
   YAxis,
   Tooltip,
+  ReferenceLine,
   ResponsiveContainer,
 } from "recharts";
 
@@ -31,7 +32,14 @@ export default function PriceChart({ ticks, strike }) {
   }));
 
   // Compute domain for Y axis (auto with some padding)
-  const prices = data.map((d) => d.price);
+  const prices = data.map((d) => d.price).filter((p) => p != null && !isNaN(p));
+  if (prices.length === 0) {
+    return (
+      <div className="h-24 flex items-center justify-center text-gray-500 text-xs">
+        No price data
+      </div>
+    );
+  }
   const allValues = strike ? [...prices, strike] : prices;
   const minPrice = Math.min(...allValues);
   const maxPrice = Math.max(...allValues);
@@ -54,7 +62,7 @@ export default function PriceChart({ ticks, strike }) {
               fontSize: 11,
             }}
             labelStyle={{ color: "#94a3b8" }}
-            formatter={(val) => [`$${val.toFixed(2)}`, "Price"]}
+            formatter={(val) => [`$${Number(val).toFixed(2)}`, "Price"]}
           />
           <Line
             type="monotone"
@@ -64,16 +72,13 @@ export default function PriceChart({ ticks, strike }) {
             dot={false}
             isAnimationActive={false}
           />
-          {/* Strike reference line */}
+          {/* Strike reference line — shows the "price to beat" */}
           {strike && (
-            <Line
-              type="monotone"
-              dataKey={() => strike}
+            <ReferenceLine
+              y={strike}
               stroke="#ef4444"
               strokeWidth={1}
               strokeDasharray="4 4"
-              dot={false}
-              isAnimationActive={false}
             />
           )}
         </LineChart>

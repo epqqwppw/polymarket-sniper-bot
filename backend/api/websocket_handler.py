@@ -6,8 +6,10 @@ from typing import Optional
 import socketio
 
 from backend.core.data_feeds import data_feed_manager
+from backend.core.decision_engine import evaluate_market
 from backend.core.market_manager import market_manager
 from backend.core.money_manager import money_manager
+from backend.core.redis_manager import redis_manager
 from backend.core.signal_engine import signal_engine
 from backend.utils.helpers import timestamp_ms
 from backend.utils.logger import get_logger
@@ -53,40 +55,76 @@ async def _emit_full_state(sid: Optional[str] = None):
     """Emit the full dashboard state to a specific client or all clients."""
     target = {"room": sid} if sid else {}
 
-    # Bankroll
-    bankroll = money_manager.get_state().model_dump()
-    await sio.emit("bankroll", bankroll, **target)
+    try:
+        # Bankroll
+        bankroll = money_manager.get_state().model_dump()
+        await sio.emit("bankroll", bankroll, **target)
 
-    # Markets and signals
-    for slug, mi in market_manager.tracked_markets.items():
-        asset = mi.asset.value
-        signals = signal_engine.latest_signals.get(slug)
-        market_data = {
-            "slug": slug,
-            "asset": mi.asset.value,
-            "duration": mi.duration.value,
-            "question": mi.question,
-            "price_to_beat": mi.price_to_beat,
-            "start_time": mi.start_time,
-            "end_time": mi.end_time,
-            "binance_price": data_feed_manager.binance_prices.get(asset),
-            "chainlink_price": data_feed_manager.chainlink_prices.get(asset),
-            "yes_price": data_feed_manager.yes_prices.get(mi.clob_token_ids.yes_id, 0.5),
-            "no_price": 1.0 - data_feed_manager.yes_prices.get(mi.clob_token_ids.yes_id, 0.5),
-            "signals": signals.model_dump() if signals else None,
-        }
-        await sio.emit("market_update", market_data, **target)
+        # Markets, signals, and decisions
+        for slug, mi in market_manager.tracked_markets.items():
+            asset = mi.asset.value
+            signals = signal_engine.latest_signals.get(slug)
 
-    # Connection status
-    await sio.emit(
-        "connection_status",
-        {
-            "binance_ws": data_feed_manager.binance_ws_healthy,
-            "rtds": data_feed_manager.rtds_healthy,
-            "redis": True,
-        },
-        **target,
-    )
+            # Build price ticks for mini-chart (last 60 entries)
+            price_buffer = data_feed_manager.price_buffers.get(asset)
+            price_ticks = []
+            if price_buffer:
+                price_ticks = [
+                    {"price": t["price"], "ts": t["ts"]}
+                    for t in list(price_buffer)[-60:]
+                ]
+
+            market_data = {
+                "slug": slug,
+                "asset": mi.asset.value,
+                "duration": mi.duration.value,
+                "question": mi.question,
+                "price_to_beat": mi.price_to_beat,
+                "start_time": mi.start_time,
+                "end_time": mi.end_time,
+                "binance_price": data_feed_manager.binance_prices.get(asset),
+                "chainlink_price": data_feed_manager.chainlink_prices.get(asset),
+                "yes_price": data_feed_manager.yes_prices.get(
+                    mi.clob_token_ids.yes_id, 0.5
+                ),
+                "no_price": 1.0
+                - data_feed_manager.yes_prices.get(
+                    mi.clob_token_ids.yes_id, 0.5
+                ),
+                "signals": signals.model_dump() if signals else None,
+                "price_ticks": price_ticks,
+            }
+
+            # Compute decision for this market if we have signals
+            if signals:
+                try:
+                    decision = evaluate_market(signals, mi)
+                    market_data["decision"] = decision.model_dump()
+                except Exception:
+                    logger.debug("Could not compute decision for %s", slug)
+
+            await sio.emit("market_update", market_data, **target)
+
+        # Trade log (last 50 trades from Redis)
+        try:
+            trades = await redis_manager.get_trade_log(limit=50)
+            for trade in trades:
+                await sio.emit("trade", trade, **target)
+        except Exception:
+            logger.debug("Could not fetch trade log from Redis")
+
+        # Connection status
+        await sio.emit(
+            "connection_status",
+            {
+                "binance_ws": data_feed_manager.binance_ws_healthy,
+                "rtds": data_feed_manager.rtds_healthy,
+                "redis": True,
+            },
+            **target,
+        )
+    except Exception:
+        logger.exception("Error emitting full state")
 
 
 class SocketBroadcaster:

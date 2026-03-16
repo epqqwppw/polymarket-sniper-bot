@@ -44,6 +44,7 @@ echo "✅ Redis is running"
 # ── 6. Start backend ─────────────────────────────────────────
 echo "🚀 Starting backend (FastAPI + Socket.IO) on port 8000 …"
 cd "$ROOT_DIR"
+export PYTHONPATH="$ROOT_DIR:$PYTHONPATH"
 python3 -m uvicorn backend.main:socket_app --host 0.0.0.0 --port 8000 &
 BACKEND_PID=$!
 
