@@ -145,9 +145,10 @@ if __name__ == "__main__":
 
     # ── Sample output ─────────────────────────────────────────────────
     now = time.time()
-    print(f"Now (UTC): {datetime.fromtimestamp(now, tz=_UTC):%Y-%m-%d %H:%M:%S}")
-    print(f"Now (ET) : {datetime.fromtimestamp(now, tz=_UTC).astimezone(_ET):%Y-%m-%d %H:%M:%S %Z}")
-    print(f"Now (IST): {datetime.fromtimestamp(now, tz=_UTC).astimezone(_IST):%Y-%m-%d %H:%M:%S %Z}")
+    now_utc = datetime.fromtimestamp(now, tz=_UTC)
+    print(f"Now (UTC): {now_utc:%Y-%m-%d %H:%M:%S}")
+    print(f"Now (ET) : {now_utc.astimezone(_ET):%Y-%m-%d %H:%M:%S %Z}")
+    print(f"Now (IST): {now_utc.astimezone(_IST):%Y-%m-%d %H:%M:%S %Z}")
     print()
 
     for entry in get_all_slugs(now_ts=now):
